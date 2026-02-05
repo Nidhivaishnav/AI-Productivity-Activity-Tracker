@@ -1,0 +1,9 @@
+streamlit
+pandas
+plotly
+sqlalchemy
+langchain
+langchain-openai
+python-dotenv
+scikit-learn
+pydantic
