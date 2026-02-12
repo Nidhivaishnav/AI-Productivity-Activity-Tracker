@@ -148,8 +148,39 @@ def show_daily_reminder():
         
         st.markdown("<hr style='border: 1px solid rgba(255,255,255,0.1); margin: 20px 0;'>", unsafe_allow_html=True)
 
+def check_task_reminders():
+    """Check for specific task reminders"""
+    if 'shown_reminders' not in st.session_state:
+        st.session_state.shown_reminders = []
+        
+    db = SessionLocal()
+    # Get tasks with reminders set
+    tasks_with_reminders = db.query(Task).filter(Task.reminder_time.isnot(None), Task.status != "Completed").all()
+    
+    current_time = datetime.now()
+    
+    for task in tasks_with_reminders:
+        try:
+            reminder_dt = datetime.fromisoformat(task.reminder_time)
+            # Check if reminder is due (within last 15 mins) and not shown
+            if reminder_dt <= current_time and task.id not in st.session_state.shown_reminders:
+                if (current_time - reminder_dt).total_seconds() < 900: # 15 mins window
+                    st.toast(f"🔔 Reminder: {task.title}", icon="⏰")
+                    st.session_state.shown_reminders.append(task.id)
+                    # Play sound
+                    st.markdown("""
+                        <audio autoplay>
+                            <source src="https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3" type="audio/mpeg">
+                        </audio>
+                    """, unsafe_allow_html=True)
+        except ValueError:
+            pass
+            
+    db.close()
+
 # Show reminder notification (will only display during 11 AM - 12 PM)
 show_daily_reminder()
+check_task_reminders()
 
 # --- Premium Custom Styling ---
 st.markdown("""
@@ -498,13 +529,22 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 # --- Sidebar Navigation ---
+# --- Sidebar Navigation ---
 st.sidebar.markdown("""
     <div style="text-align: center; padding: 20px 0;">
         <h1 style="font-size: 1.8rem; margin: 0;">🚀</h1>
         <h2 style="font-size: 1.2rem; margin: 10px 0; background: linear-gradient(90deg, #00d4ff, #a855f7); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">Productivity AI</h2>
     </div>
 """, unsafe_allow_html=True)
-menu = st.sidebar.radio("Navigation", ["Dashboard", "My Tasks", "AI Goal Planner", "Achievements"])
+
+# Navigation Logic
+if 'navigation' not in st.session_state:
+    st.session_state.navigation = "Dashboard"
+
+if 'nav_to' in st.session_state:
+    st.session_state.navigation = st.session_state.pop('nav_to')
+
+menu = st.sidebar.radio("Navigation", ["Dashboard", "My Tasks", "AI Goal Planner", "Achievements"], key="navigation")
 
 # Add sidebar footer
 st.sidebar.markdown("""
@@ -724,8 +764,9 @@ if menu == "Dashboard":
                 ))
                 # Add a second area for tasks (scaled)
                 max_score = max(scores) if scores else 100
-                max_tasks = max(counts) if counts else 1
-                scaled_tasks = [t * (max_score / max_tasks) * 0.8 for t in counts]
+                max_tasks = max(1, max(counts)) if counts else 1  # Avoid division by zero
+                scale_factor = (max_score / max_tasks) * 0.8 if max_tasks > 0 else 0
+                scaled_tasks = [t * scale_factor for t in counts]
                 fig_area.add_trace(go.Scatter(
                     x=df["Date"], y=scaled_tasks,
                     fill='tozeroy',
@@ -815,10 +856,7 @@ if menu == "Dashboard":
         # Quick Actions
         st.markdown("<h3 style='margin-bottom: 20px;'>⚡ Quick Actions</h3>", unsafe_allow_html=True)
         
-        st.markdown("""
-            <div class="glass-card" style="padding: 20px;">
-        """, unsafe_allow_html=True)
-        
+        # Removed wrapping div to fix clickability issues
         if st.button("➕ Add New Task", key="quick_add_task", use_container_width=True):
             st.session_state['nav_to'] = "My Tasks"
             st.rerun()
@@ -834,8 +872,6 @@ if menu == "Dashboard":
         if st.button("🏆 View Achievements", key="quick_achievements", use_container_width=True):
             st.session_state['nav_to'] = "Achievements"
             st.rerun()
-        
-        st.markdown("</div>", unsafe_allow_html=True)
         
         # Today's Focus Panel
         st.markdown("<h3 style='margin-top: 30px; margin-bottom: 20px;'>🎯 Today's Focus</h3>", unsafe_allow_html=True)
@@ -920,7 +956,7 @@ elif menu == "My Tasks":
             submitted = st.form_submit_button("✨ Add Task")
             if submitted and title:
                 priority_map = {"Low": 1, "Medium": 2, "High": 3}
-                new_t = Task(title=title, description=desc, priority=priority_map[priority], difficulty=difficulty)
+                new_t = Task(title=title, description=desc, priority=priority_map[priority], difficulty=difficulty, category="General")
                 db.add(new_t)
                 db.commit()
                 st.success("🎉 Task added successfully!")
@@ -935,17 +971,83 @@ elif menu == "My Tasks":
             priority_class = "high" if t.priority == 3 else "medium" if t.priority == 2 else "low"
             priority_emoji = "🔴" if t.priority == 3 else "🟡" if t.priority == 2 else "🟢"
             
-            col1, col2 = st.columns([0.85, 0.15])
+            col1, col2, col3 = st.columns([0.65, 0.2, 0.15])
             with col1:
                 st.markdown(f"""
                     <div class="task-card task-priority-{priority_class}">
                         <div>
-                            <div class="task-title">{priority_emoji} {t.title}</div>
+                            <div class="task-title">{priority_emoji} {t.title} <span style="font-size: 0.7rem; background: rgba(255,255,255,0.1); padding: 2px 6px; border-radius: 4px; margin-left: 8px; color: rgba(255,255,255,0.7);">{t.category}</span></div>
                             <div class="task-desc">{t.description if t.description else 'No description'}</div>
+                            <div style="font-size: 0.75rem; color: rgba(255,255,255,0.4); margin-top: 5px;">
+                                ⏱️ Spent: {t.time_spent // 60}m {t.time_spent % 60}s | 📅 Due: {t.due_date} {f"| ⏰ {datetime.fromisoformat(t.reminder_time).strftime('%H:%M')}" if t.reminder_time else ""}
+                            </div>
                         </div>
                     </div>
                 """, unsafe_allow_html=True)
+                
+                # Inline Edit Form
+                if st.session_state.get(f'edit_mode_{t.id}', False):
+                    with st.expander("✏️ Edit Task", expanded=True):
+                        with st.form(f"edit_task_{t.id}"):
+                            new_title = st.text_input("Title", value=t.title)
+                            new_desc = st.text_area("Description", value=t.description)
+                            c1, c2, c3 = st.columns(3)
+                            with c1:
+                                new_priority = st.selectbox("Priority", ["Low", "Medium", "High"], index=["Low", "Medium", "High"].index(["Low", "Medium", "High"][t.priority-1]))
+                            with c2:
+                                reminder_val = None
+                                if t.reminder_time:
+                                    try:
+                                        reminder_val = datetime.fromisoformat(t.reminder_time).time()
+                                    except:
+                                        pass
+                                new_reminder = st.time_input("Set Reminder", value=reminder_val)
+                            with c3:
+                                new_due_date = st.date_input("Due Date", value=t.due_date)
+                                
+                            if st.form_submit_button("💾 Save Changes"):
+                                t.title = new_title
+                                t.description = new_desc
+                                t.priority = {"Low": 1, "Medium": 2, "High": 3}[new_priority]
+                                t.due_date = new_due_date
+                                if new_reminder:
+                                    # Combine today/due date with time for reminder
+                                    rem_dt = datetime.combine(date.today(), new_reminder)
+                                    # If time is in past for today, assume it's for the due date
+                                    if rem_dt < datetime.now() and new_due_date > date.today():
+                                        rem_dt = datetime.combine(new_due_date, new_reminder)
+                                    t.reminder_time = rem_dt.isoformat()
+                                else:
+                                    t.reminder_time = None
+                                    
+                                db.commit()
+                                st.session_state[f'edit_mode_{t.id}'] = False
+                                st.success("Task updated!")
+                                st.rerun()
+
             with col2:
+                # Timer Controls
+                if st.session_state.get('active_timer_task_id') == t.id:
+                    # Active Timer
+                    elapsed = int((datetime.now() - st.session_state['active_timer_start']).total_seconds())
+                    st.info(f"⏱️ {elapsed // 60}:{elapsed % 60:02d}")
+                    if st.button("⏹ Stop", key=f"stop_timer_{t.id}"):
+                        t.time_spent += elapsed
+                        db.commit()
+                        st.session_state['active_timer_task_id'] = None
+                        st.rerun()
+                else:
+                    # Inactive Timer
+                    if st.button("▶ Start", key=f"start_timer_{t.id}"):
+                        st.session_state['active_timer_task_id'] = t.id
+                        st.session_state['active_timer_start'] = datetime.now()
+                        st.rerun()
+                        
+            with col3:
+                if st.button("✏️ Edit", key=f"edit_btn_{t.id}"):
+                    st.session_state[f'edit_mode_{t.id}'] = not st.session_state.get(f'edit_mode_{t.id}', False)
+                    st.rerun()
+                    
                 if st.button("✅ Done", key=f"done_{t.id}"):
                     t.status = "Completed"
                     db.commit()
@@ -992,12 +1094,13 @@ elif menu == "AI Goal Planner":
     with st.form("goal_form"):
         goal_title = st.text_input("🎯 What is your major goal?", placeholder="e.g. Master Machine Learning, Learn Spanish, Build a Startup")
         goal_desc = st.text_area("📝 Provide some context...", placeholder="Tell us more about your goal, your current level, and what you want to achieve...")
+        custom_instructions = st.text_area("🔧 Custom Instructions / Project Details", placeholder="Any specific requirements? e.g., 'Focus on practical projects', 'Exclude testing tasks', 'I have 2 hours daily'...")
         target_date = st.date_input("📅 Target Date", value=date.today() + timedelta(days=30))
         plan_it = st.form_submit_button("⚡ Break it Down")
         
         if plan_it and goal_title:
             with st.spinner("🧠 AI is analyzing your goal..."):
-                tasks = st.session_state.goal_agent.decompose_goal(goal_title, goal_desc)
+                tasks = st.session_state.goal_agent.decompose_goal(goal_title, goal_desc, custom_instructions)
                 if tasks:
                     db = SessionLocal()
                     new_goal = Goal(title=goal_title, description=goal_desc, target_date=target_date)
@@ -1011,6 +1114,7 @@ elif menu == "AI Goal Planner":
                             description=sub['description'],
                             difficulty=sub.get('difficulty', 2),
                             priority=sub.get('priority', 2),
+                            category=sub.get('category', 'General'),
                             due_date=date.today()
                         )
                         db.add(new_t)
@@ -1030,7 +1134,10 @@ elif menu == "AI Goal Planner":
                                 <div style="flex: 1;">
                                     <div class="task-title">{task['title']}</div>
                                     <div class="task-desc">{task['description']}</div>
-                                    <div style="margin-top: 8px; font-size: 0.8rem; color: rgba(255,255,255,0.5);">Difficulty: {difficulty_stars}</div>
+                                    <div style="display: flex; gap: 10px; margin-top: 8px; align-items: center;">
+                                        <span style="font-size: 0.8rem; color: rgba(255,255,255,0.5);">Difficulty: {difficulty_stars}</span>
+                                        <span style="background: rgba(0, 212, 255, 0.1); color: #00d4ff; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem;">{task.get('category', 'General')}</span>
+                                    </div>
                                 </div>
                             </div>
                         """, unsafe_allow_html=True)
