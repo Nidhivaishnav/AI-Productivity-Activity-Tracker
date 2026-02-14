@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 from datetime import date, datetime, timedelta
-from database import init_db, SessionLocal, Task, Goal, Badge, UserStats
+from database import init_db, SessionLocal, Task, Goal, Badge, UserStats, User, hash_password, verify_password
 from logic_llm import GoalAgent
 from logic_analytics import update_daily_stats, get_productivity_trends, forecast_productivity
 import plotly.express as px
@@ -17,6 +17,89 @@ st.set_page_config(
 # Initialize Database
 init_db()
 update_daily_stats()
+
+# --- Authentication ---
+def show_auth_page():
+    """Show login/signup page"""
+    st.markdown("""
+        <style>
+        .auth-container {
+            max-width: 420px; margin: 60px auto; padding: 40px;
+            background: rgba(255,255,255,0.05); backdrop-filter: blur(20px);
+            border-radius: 24px; border: 1px solid rgba(255,255,255,0.1);
+        }
+        .auth-title {
+            text-align: center; font-size: 2rem; font-weight: 700; margin-bottom: 10px;
+            background: linear-gradient(90deg, #00d4ff, #a855f7);
+            -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+        }
+        .auth-subtitle { text-align: center; color: rgba(255,255,255,0.5); margin-bottom: 30px; }
+        </style>
+    """, unsafe_allow_html=True)
+
+    st.markdown('<div class="auth-container">', unsafe_allow_html=True)
+    st.markdown('<div class="auth-title">🚀 Productivity AI</div>', unsafe_allow_html=True)
+    st.markdown('<p class="auth-subtitle">Sign in to track your goals</p>', unsafe_allow_html=True)
+
+    auth_tab1, auth_tab2 = st.tabs(["🔑 Sign In", "✨ Sign Up"])
+
+    with auth_tab1:
+        with st.form("login_form"):
+            login_user = st.text_input("Username", placeholder="Enter username", key="login_u")
+            login_pass = st.text_input("Password", type="password", placeholder="Enter password", key="login_p")
+            if st.form_submit_button("🔓 Sign In", use_container_width=True):
+                if login_user and login_pass:
+                    db = SessionLocal()
+                    user = db.query(User).filter(User.username == login_user).first()
+                    if user and verify_password(login_pass, user.password_hash):
+                        st.session_state['user_id'] = user.id
+                        st.session_state['username'] = user.username
+                        db.close()
+                        st.rerun()
+                    else:
+                        st.error("❌ Invalid username or password")
+                    db.close()
+                else:
+                    st.warning("Please fill in all fields")
+
+    with auth_tab2:
+        with st.form("signup_form"):
+            new_user = st.text_input("Username", placeholder="Choose a username", key="signup_u")
+            new_email = st.text_input("Email (optional)", placeholder="your@email.com", key="signup_e")
+            new_pass = st.text_input("Password", type="password", placeholder="Choose a password", key="signup_p")
+            new_pass2 = st.text_input("Confirm Password", type="password", placeholder="Confirm password", key="signup_p2")
+            if st.form_submit_button("🚀 Create Account", use_container_width=True):
+                if new_user and new_pass:
+                    if new_pass != new_pass2:
+                        st.error("❌ Passwords don't match")
+                    elif len(new_pass) < 4:
+                        st.error("❌ Password must be at least 4 characters")
+                    else:
+                        db = SessionLocal()
+                        existing = db.query(User).filter(User.username == new_user).first()
+                        if existing:
+                            st.error("❌ Username already taken")
+                        else:
+                            user = User(username=new_user, password_hash=hash_password(new_pass), email=new_email or None)
+                            db.add(user)
+                            db.commit()
+                            st.session_state['user_id'] = user.id
+                            st.session_state['username'] = user.username
+                            st.success("🎉 Account created!")
+                            db.close()
+                            st.rerun()
+                        db.close()
+                else:
+                    st.warning("Please fill in username and password")
+
+    st.markdown('</div>', unsafe_allow_html=True)
+
+# --- Auth Gate ---
+if 'user_id' not in st.session_state:
+    show_auth_page()
+    st.stop()
+
+current_user_id = st.session_state['user_id']
 
 # --- Daily Target Reminder Notification (11 AM - 12 PM) ---
 def show_daily_reminder():
@@ -216,8 +299,9 @@ st.markdown("""
     }
     
     /* Global font */
-    * {
-        font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif !important;
+    /* Global font - target specific containers instead of * to avoid breaking icons */
+    html, body, [data-testid="stAppViewContainer"] {
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
     }
     
     /* Hide Streamlit branding */
@@ -530,12 +614,21 @@ st.markdown("""
 
 # --- Sidebar Navigation ---
 # --- Sidebar Navigation ---
-st.sidebar.markdown("""
+st.sidebar.markdown(f"""
     <div style="text-align: center; padding: 20px 0;">
         <h1 style="font-size: 1.8rem; margin: 0;">🚀</h1>
         <h2 style="font-size: 1.2rem; margin: 10px 0; background: linear-gradient(90deg, #00d4ff, #a855f7); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">Productivity AI</h2>
+        <p style="color: rgba(255,255,255,0.5); font-size: 0.85rem; margin: 0;">👤 {st.session_state.get('username', 'User')}</p>
     </div>
 """, unsafe_allow_html=True)
+
+# Logout button
+if st.sidebar.button("🚪 Logout", use_container_width=True):
+    for key in ['user_id', 'username', 'navigation', 'goal_agent']:
+        st.session_state.pop(key, None)
+    st.rerun()
+
+st.sidebar.markdown("---")
 
 # Navigation Logic
 if 'navigation' not in st.session_state:
@@ -544,7 +637,7 @@ if 'navigation' not in st.session_state:
 if 'nav_to' in st.session_state:
     st.session_state.navigation = st.session_state.pop('nav_to')
 
-menu = st.sidebar.radio("Navigation", ["Dashboard", "My Tasks", "AI Goal Planner", "Achievements"], key="navigation")
+menu = st.sidebar.radio("Navigation", ["Dashboard", "My Tasks", "📅 Day Planner", "AI Goal Planner", "Achievements"], key="navigation")
 
 # Add sidebar footer
 st.sidebar.markdown("""
@@ -564,9 +657,9 @@ if menu == "Dashboard":
     db = SessionLocal()
     streak = db.query(UserStats).order_by(UserStats.date.desc()).first()
     streak_val = streak.streak_count if streak else 0
-    total_tasks_completed = db.query(Task).filter(Task.status == "Completed").count()
-    pending_tasks = db.query(Task).filter(Task.status != "Completed").count()
-    today_tasks = db.query(Task).filter(Task.due_date == date.today(), Task.status != "Completed").all()
+    total_tasks_completed = db.query(Task).filter(Task.status == "Completed", Task.user_id == current_user_id).count()
+    pending_tasks = db.query(Task).filter(Task.status != "Completed", Task.user_id == current_user_id).count()
+    today_tasks = db.query(Task).filter(Task.due_date == date.today(), Task.status != "Completed", Task.user_id == current_user_id).all()
     forecast = forecast_productivity()
     
     # Time-based greeting
@@ -620,6 +713,103 @@ if menu == "Dashboard":
         </div>
     """, unsafe_allow_html=True)
     
+    # --- Thought of the Day ---
+    import calendar as cal_mod
+    thoughts = [
+        "Believe you can and you're halfway there.",
+        "Success is the sum of small efforts, repeated day in and day out.",
+        "Start where you are. Use what you have. Do what you can.",
+        "Every accomplishment starts with the decision to try.",
+        "Don't watch the clock; do what it does. Keep going.",
+        "The future depends on what you do today.",
+        "Productivity is never an accident. It is always the result of commitment.",
+        "Focus on progress, not perfection.",
+    ]
+    thought_of_day = thoughts[date.today().toordinal() % len(thoughts)]
+    
+    st.markdown(f"""
+        <div style="
+            background: linear-gradient(135deg, rgba(0,212,255,0.15) 0%, rgba(168,85,247,0.15) 100%);
+            border-radius: 16px; padding: 20px 28px; margin-bottom: 24px;
+            border: 1px solid rgba(255,255,255,0.1);
+            display: flex; align-items: center; gap: 16px;
+        ">
+            <div style="font-size: 2.2rem;">💭</div>
+            <div>
+                <div style="color: rgba(255,255,255,0.5); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 4px;">Thought of the Day</div>
+                <div style="color: #fff; font-size: 1.1rem; font-weight: 500; font-style: italic;">"{thought_of_day}"</div>
+            </div>
+        </div>
+    """, unsafe_allow_html=True)
+
+    # --- Full Monthly Calendar Grid ---
+    today = date.today()
+    cal_year, cal_month = today.year, today.month
+    month_name = today.strftime("%B %Y")
+    first_day_weekday = cal_mod.monthrange(cal_year, cal_month)[0]  # 0=Mon
+    days_in_month = cal_mod.monthrange(cal_year, cal_month)[1]
+
+    # Convert Monday=0 start to Sunday=0 start
+    start_offset = (first_day_weekday + 1) % 7
+
+    # Get task counts per day for this month
+    month_tasks_raw = db.query(Task).filter(
+        Task.user_id == current_user_id,
+        Task.due_date >= date(cal_year, cal_month, 1),
+        Task.due_date <= date(cal_year, cal_month, days_in_month)
+    ).all()
+    task_count_by_day = {}
+    for tk in month_tasks_raw:
+        if tk.due_date:
+            d = tk.due_date.day
+            task_count_by_day[d] = task_count_by_day.get(d, 0) + 1
+
+    day_headers = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+    header_html = "".join(
+        f'<div style="text-align:center; font-weight:700; color:{("#ef4444" if i in (0,6) else "rgba(255,255,255,0.7)")}; font-size:0.85rem; padding: 10px 0;">{d}</div>'
+        for i, d in enumerate(day_headers)
+    )
+
+    cells_html = ""
+    # Empty cells before month starts
+    for _ in range(start_offset):
+        cells_html += '<div style="min-height:70px; border: 1px solid rgba(255,255,255,0.05); padding: 6px;"></div>'
+
+    for day in range(1, days_in_month + 1):
+        is_today = (day == today.day)
+        weekday_idx = (start_offset + day - 1) % 7
+        is_weekend = weekday_idx in (0, 6)
+        tc = task_count_by_day.get(day, 0)
+
+        bg = "rgba(0,212,255,0.2)" if is_today else ("rgba(239,68,68,0.06)" if is_weekend else "rgba(255,255,255,0.02)")
+        border = "2px solid #00d4ff" if is_today else "1px solid rgba(255,255,255,0.06)"
+        num_color = "#00d4ff" if is_today else ("#ef4444" if is_weekend else "rgba(255,255,255,0.8)")
+        dot_html = f'<div style="margin-top:4px;"><span style="background:#a855f7; color:#fff; font-size:0.65rem; padding:1px 6px; border-radius:8px;">{tc} task{"s" if tc != 1 else ""}</span></div>' if tc > 0 else ""
+
+        cells_html += f'''<div style="min-height:70px; border:{border}; padding:6px; background:{bg}; border-radius:4px; transition: all 0.2s ease;">
+            <div style="font-weight:{'700' if is_today else '500'}; font-size:0.95rem; color:{num_color};">{day}</div>
+            {dot_html}
+        </div>'''
+
+    # Fill remaining cells to complete the grid
+    total_cells = start_offset + days_in_month
+    remaining = (7 - total_cells % 7) % 7
+    for _ in range(remaining):
+        cells_html += '<div style="min-height:70px; border: 1px solid rgba(255,255,255,0.05); padding: 6px;"></div>'
+
+    st.markdown(f"""
+        <div class="glass-card" style="padding: 24px; margin-bottom: 24px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+                <h3 style="margin: 0; background: linear-gradient(90deg, #fff, #00d4ff); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">📅 {month_name}</h3>
+                <div style="color: rgba(255,255,255,0.5); font-size: 0.85rem;">Today: {today.strftime('%A, %b %d')}</div>
+            </div>
+            <div style="display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px;">
+                {header_html}
+                {cells_html}
+            </div>
+        </div>
+    """, unsafe_allow_html=True)
+
     # Main Dashboard Layout - Two Columns
     left_col, right_col = st.columns([2, 1])
     
@@ -948,15 +1138,26 @@ elif menu == "My Tasks":
         with st.form("new_task"):
             title = st.text_input("Task Title", placeholder="What do you need to do?")
             desc = st.text_area("Description", placeholder="Add some details...")
-            col1, col2 = st.columns(2)
+            col1, col2, col3 = st.columns(3)
             with col1:
                 priority = st.select_slider("Priority", options=["Low", "Medium", "High"], value="Medium")
             with col2:
                 difficulty = st.slider("Difficulty", 1, 5, 3)
+            with col3:
+                category = st.selectbox("Category", ["General", "Learning", "Coding", "Health", "Work", "Personal"])
+            col4, col5 = st.columns(2)
+            with col4:
+                due_date = st.date_input("📅 Due Date", value=date.today())
+            with col5:
+                reminder_time = st.time_input("⏰ Reminder Time (optional)", value=None)
             submitted = st.form_submit_button("✨ Add Task")
             if submitted and title:
                 priority_map = {"Low": 1, "Medium": 2, "High": 3}
-                new_t = Task(title=title, description=desc, priority=priority_map[priority], difficulty=difficulty, category="General")
+                rem_str = None
+                if reminder_time:
+                    rem_dt = datetime.combine(due_date, reminder_time)
+                    rem_str = rem_dt.isoformat()
+                new_t = Task(title=title, description=desc, priority=priority_map[priority], difficulty=difficulty, category=category, due_date=due_date, reminder_time=rem_str, user_id=current_user_id)
                 db.add(new_t)
                 db.commit()
                 st.success("🎉 Task added successfully!")
@@ -964,7 +1165,7 @@ elif menu == "My Tasks":
 
     # List Tasks
     st.markdown("<h3 style='margin-top: 20px;'>📌 Pending Tasks</h3>", unsafe_allow_html=True)
-    tasks = db.query(Task).filter(Task.status != "Completed").all()
+    tasks = db.query(Task).filter(Task.status != "Completed", Task.user_id == current_user_id).all()
     
     if tasks:
         for t in tasks:
@@ -1054,6 +1255,11 @@ elif menu == "My Tasks":
                     update_daily_stats()
                     st.balloons()
                     st.rerun()
+
+                if st.button("❌ Delete", key=f"del_{t.id}"):
+                    db.delete(t)
+                    db.commit()
+                    st.rerun()
     else:
         st.markdown("""
             <div class="glass-card" style="text-align: center; padding: 40px;">
@@ -1063,7 +1269,7 @@ elif menu == "My Tasks":
     
     # Completed Tasks
     st.markdown("<h3 style='margin-top: 30px;'>✅ Completed</h3>", unsafe_allow_html=True)
-    done_tasks = db.query(Task).filter(Task.status == "Completed").order_by(Task.id.desc()).limit(5).all()
+    done_tasks = db.query(Task).filter(Task.status == "Completed", Task.user_id == current_user_id).order_by(Task.id.desc()).limit(5).all()
     
     if done_tasks:
         for t in done_tasks:
@@ -1076,6 +1282,109 @@ elif menu == "My Tasks":
     else:
         st.markdown("<p style='color: rgba(255,255,255,0.4);'>No completed tasks yet. Get started!</p>", unsafe_allow_html=True)
         
+    db.close()
+
+# --- Day Planner with Calendar ---
+elif menu == "📅 Day Planner":
+    st.title("📅 Day Planner")
+    st.markdown("<p style='color: rgba(255,255,255,0.6); margin-top: -10px;'>Plan your day, tick off completed tasks, and stay organized</p>", unsafe_allow_html=True)
+
+    db = SessionLocal()
+
+    # Calendar date picker
+    left_col, right_col = st.columns([1, 2])
+    with left_col:
+        st.markdown("<h3>📆 Select Date</h3>", unsafe_allow_html=True)
+        selected_date = st.date_input("Pick a date", value=date.today(), key="planner_date", label_visibility="collapsed")
+
+        # Mini stats for selected date
+        day_tasks = db.query(Task).filter(Task.due_date == selected_date, Task.user_id == current_user_id).all()
+        done_count = sum(1 for t in day_tasks if t.status == "Completed")
+        pending_count = sum(1 for t in day_tasks if t.status != "Completed")
+
+        st.markdown(f"""
+            <div class="glass-card" style="padding: 16px; text-align: center;">
+                <div style="display: flex; justify-content: space-around;">
+                    <div><div style="font-size: 1.5rem; font-weight: bold; color: #00d4ff;">{len(day_tasks)}</div><div style="color: rgba(255,255,255,0.5); font-size: 0.8rem;">Total</div></div>
+                    <div><div style="font-size: 1.5rem; font-weight: bold; color: #10b981;">{done_count}</div><div style="color: rgba(255,255,255,0.5); font-size: 0.8rem;">Done</div></div>
+                    <div><div style="font-size: 1.5rem; font-weight: bold; color: #f59e0b;">{pending_count}</div><div style="color: rgba(255,255,255,0.5); font-size: 0.8rem;">Pending</div></div>
+                </div>
+                <div style="margin-top: 12px; background: rgba(255,255,255,0.1); border-radius: 6px; height: 6px; overflow: hidden;">
+                    <div style="width: {(done_count / max(len(day_tasks), 1)) * 100}%; height: 100%; background: linear-gradient(90deg, #10b981, #00d4ff); border-radius: 6px;"></div>
+                </div>
+            </div>
+        """, unsafe_allow_html=True)
+
+        # Quick add task
+        st.markdown("<h4 style='margin-top: 20px;'>➕ Quick Add</h4>", unsafe_allow_html=True)
+        with st.form("quick_add_planner"):
+            q_title = st.text_input("Task", placeholder="What needs to be done?", label_visibility="collapsed")
+            q_col1, q_col2 = st.columns(2)
+            with q_col1:
+                q_priority = st.selectbox("Priority", ["Low", "Medium", "High"], index=1, key="qp_pri")
+            with q_col2:
+                q_reminder = st.time_input("⏰ Reminder", value=None, key="qp_rem")
+            if st.form_submit_button("➕ Add", use_container_width=True):
+                if q_title:
+                    rem_str = None
+                    if q_reminder:
+                        rem_str = datetime.combine(selected_date, q_reminder).isoformat()
+                    new_t = Task(title=q_title, due_date=selected_date, priority={"Low": 1, "Medium": 2, "High": 3}[q_priority], user_id=current_user_id, reminder_time=rem_str)
+                    db.add(new_t)
+                    db.commit()
+                    st.rerun()
+
+    with right_col:
+        st.markdown(f"<h3>📋 Tasks for {selected_date.strftime('%A, %b %d, %Y')}</h3>", unsafe_allow_html=True)
+
+        pending_tasks = [t for t in day_tasks if t.status != "Completed"]
+        completed_tasks = [t for t in day_tasks if t.status == "Completed"]
+
+        if pending_tasks:
+            for t in pending_tasks:
+                p_emoji = "🔴" if t.priority == 3 else "🟡" if t.priority == 2 else "🟢"
+                p_color = "#ef4444" if t.priority == 3 else "#f59e0b" if t.priority == 2 else "#10b981"
+                rem_text = f" | ⏰ {datetime.fromisoformat(t.reminder_time).strftime('%I:%M %p')}" if t.reminder_time else ""
+
+                tc1, tc2, tc3 = st.columns([0.7, 0.15, 0.15])
+                with tc1:
+                    st.markdown(f"""
+                        <div style="background: rgba(255,255,255,0.03); border-radius: 12px; padding: 14px 18px; border-left: 3px solid {p_color}; margin-bottom: 4px;">
+                            <div style="font-weight: 600; color: #fff;">{p_emoji} {t.title}</div>
+                            <div style="font-size: 0.75rem; color: rgba(255,255,255,0.4); margin-top: 4px;">
+                                {t.category or "General"}{rem_text}
+                            </div>
+                        </div>
+                    """, unsafe_allow_html=True)
+                with tc2:
+                    if st.button("✅", key=f"plan_done_{t.id}", help="Mark as complete"):
+                        t.status = "Completed"
+                        db.commit()
+                        update_daily_stats()
+                        st.rerun()
+                with tc3:
+                    if st.button("❌", key=f"plan_del_{t.id}", help="Delete task"):
+                        db.delete(t)
+                        db.commit()
+                        st.rerun()
+        else:
+            st.markdown("""
+                <div class="glass-card" style="text-align: center; padding: 30px;">
+                    <div style="font-size: 2rem; margin-bottom: 10px;">🎉</div>
+                    <p style="color: rgba(255,255,255,0.5); margin:0;">No pending tasks for this day!</p>
+                </div>
+            """, unsafe_allow_html=True)
+
+        if completed_tasks:
+            st.markdown("<h4 style='margin-top: 20px;'>✅ Completed</h4>", unsafe_allow_html=True)
+            for t in completed_tasks:
+                st.markdown(f"""
+                    <div style="padding: 10px 18px; background: rgba(16,185,129,0.1); border-radius: 10px; margin-bottom: 6px; border-left: 3px solid #10b981;">
+                        <span style="text-decoration: line-through; color: rgba(255,255,255,0.5);">{t.title}</span>
+                        <span style="float: right; color: #10b981;">✓</span>
+                    </div>
+                """, unsafe_allow_html=True)
+
     db.close()
 
 # --- AI Goal Planner ---
@@ -1103,7 +1412,7 @@ elif menu == "AI Goal Planner":
                 tasks = st.session_state.goal_agent.decompose_goal(goal_title, goal_desc, custom_instructions)
                 if tasks:
                     db = SessionLocal()
-                    new_goal = Goal(title=goal_title, description=goal_desc, target_date=target_date)
+                    new_goal = Goal(title=goal_title, description=goal_desc, target_date=target_date, user_id=current_user_id)
                     db.add(new_goal)
                     db.flush()
                     
@@ -1115,7 +1424,8 @@ elif menu == "AI Goal Planner":
                             difficulty=sub.get('difficulty', 2),
                             priority=sub.get('priority', 2),
                             category=sub.get('category', 'General'),
-                            due_date=date.today()
+                            due_date=date.today(),
+                            user_id=current_user_id
                         )
                         db.add(new_t)
                     db.commit()
@@ -1145,7 +1455,7 @@ elif menu == "AI Goal Planner":
     # View Goals
     st.markdown("<h3 style='margin-top: 40px;'>🎯 Current Goals</h3>", unsafe_allow_html=True)
     db = SessionLocal()
-    goals = db.query(Goal).order_by(Goal.id.desc()).all()
+    goals = db.query(Goal).filter(Goal.user_id == current_user_id).order_by(Goal.id.desc()).all()
     
     if goals:
         for g in goals:
@@ -1211,8 +1521,8 @@ elif menu == "Achievements":
     # Achievement stats
     st.markdown("<h3 style='margin-top: 20px;'>📊 Your Stats</h3>", unsafe_allow_html=True)
     db = SessionLocal()
-    total_completed = db.query(Task).filter(Task.status == "Completed").count()
-    total_goals = db.query(Goal).count()
+    total_completed = db.query(Task).filter(Task.status == "Completed", Task.user_id == current_user_id).count()
+    total_goals = db.query(Goal).filter(Goal.user_id == current_user_id).count()
     unlocked_badges = db.query(Badge).filter(Badge.unlocked_at != None).count()
     total_badges = db.query(Badge).count()
     db.close()

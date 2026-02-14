@@ -3,6 +3,7 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
 from datetime import date
 import os
+import hashlib
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -21,20 +22,43 @@ def get_secret(key, default=None):
 
 Base = declarative_base()
 
+# --- User Model ---
+class User(Base):
+    __tablename__ = 'users'
+    id = Column(Integer, primary_key=True)
+    username = Column(String, unique=True, nullable=False)
+    password_hash = Column(String, nullable=False)
+    email = Column(String, nullable=True)
+    created_at = Column(Date, default=date.today)
+
+    tasks = relationship("Task", back_populates="user", cascade="all, delete-orphan")
+    goals = relationship("Goal", back_populates="user", cascade="all, delete-orphan")
+
+def hash_password(password: str) -> str:
+    """Hash a password using SHA-256"""
+    return hashlib.sha256(password.encode()).hexdigest()
+
+def verify_password(password: str, password_hash: str) -> bool:
+    """Verify a password against its hash"""
+    return hash_password(password) == password_hash
+
 class Goal(Base):
     __tablename__ = 'goals'
     id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=True)
     title = Column(String, nullable=False)
     description = Column(String)
     target_date = Column(Date)
     progress = Column(Float, default=0.0)
     is_completed = Column(Boolean, default=False)
     
+    user = relationship("User", back_populates="goals")
     tasks = relationship("Task", back_populates="goal", cascade="all, delete-orphan")
 
 class Task(Base):
     __tablename__ = 'tasks'
     id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=True)
     goal_id = Column(Integer, ForeignKey('goals.id'), nullable=True)
     title = Column(String, nullable=False)
     description = Column(String)
@@ -43,6 +67,7 @@ class Task(Base):
     priority = Column(Integer, default=1) # 1: Low, 2: Medium, 3: High
     difficulty = Column(Integer, default=1) # 1-5
     
+    user = relationship("User", back_populates="tasks")
     goal = relationship("Goal", back_populates="tasks")
     category = Column(String, default="General") # General, Learning, Coding, Health, etc.
     time_spent = Column(Integer, default=0) # Saved in seconds
@@ -51,6 +76,7 @@ class Task(Base):
 class UserStats(Base):
     __tablename__ = 'user_stats'
     id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=True)
     date = Column(Date, unique=True)
     tasks_completed = Column(Integer, default=0)
     productivity_score = Column(Float, default=0.0)
@@ -59,6 +85,7 @@ class UserStats(Base):
 class Badge(Base):
     __tablename__ = 'badges'
     id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=True)
     name = Column(String, unique=True)
     description = Column(String)
     icon = Column(String)
@@ -80,11 +107,12 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 def init_db():
     Base.metadata.create_all(bind=engine)
     
-    # Migration: Check if new columns exist in tasks table
+    # Migration: Check if new columns exist in tables
     from sqlalchemy import inspect, text
     inspector = inspect(engine)
     
     try:
+        # --- Tasks table migration ---
         columns = [c['name'] for c in inspector.get_columns('tasks')]
         
         with engine.connect() as conn:
@@ -92,7 +120,7 @@ def init_db():
                 try:
                     conn.execute(text("ALTER TABLE tasks ADD COLUMN category VARCHAR DEFAULT 'General'"))
                 except Exception:
-                    pass  # Column might already exist
+                    pass
             
             if 'time_spent' not in columns:
                 try:
@@ -105,11 +133,56 @@ def init_db():
                     conn.execute(text("ALTER TABLE tasks ADD COLUMN reminder_time VARCHAR NULL"))
                 except Exception:
                     pass
+
+            if 'user_id' not in columns:
+                try:
+                    conn.execute(text("ALTER TABLE tasks ADD COLUMN user_id INTEGER NULL"))
+                except Exception:
+                    pass
                 
             conn.commit()
     except Exception:
         pass  # Table might not exist yet on first run
-    
+
+    try:
+        # --- Goals table migration ---
+        goal_columns = [c['name'] for c in inspector.get_columns('goals')]
+        with engine.connect() as conn:
+            if 'user_id' not in goal_columns:
+                try:
+                    conn.execute(text("ALTER TABLE goals ADD COLUMN user_id INTEGER NULL"))
+                except Exception:
+                    pass
+            conn.commit()
+    except Exception:
+        pass
+
+    try:
+        # --- user_stats table migration ---
+        stats_columns = [c['name'] for c in inspector.get_columns('user_stats')]
+        with engine.connect() as conn:
+            if 'user_id' not in stats_columns:
+                try:
+                    conn.execute(text("ALTER TABLE user_stats ADD COLUMN user_id INTEGER NULL"))
+                except Exception:
+                    pass
+            conn.commit()
+    except Exception:
+        pass
+
+    try:
+        # --- badges table migration ---
+        badge_columns = [c['name'] for c in inspector.get_columns('badges')]
+        with engine.connect() as conn:
+            if 'user_id' not in badge_columns:
+                try:
+                    conn.execute(text("ALTER TABLE badges ADD COLUMN user_id INTEGER NULL"))
+                except Exception:
+                    pass
+            conn.commit()
+    except Exception:
+        pass
+
     # Initialize some default badges if they don't exist
     session = SessionLocal()
     if session.query(Badge).count() == 0:
